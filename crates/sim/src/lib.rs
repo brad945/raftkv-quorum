@@ -30,6 +30,7 @@ impl Rng {
     pub fn new(seed: u64) -> Self {
         Rng(seed)
     }
+    #[allow(clippy::should_implement_trait)] // an infinite generator, not an Iterator
     pub fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;

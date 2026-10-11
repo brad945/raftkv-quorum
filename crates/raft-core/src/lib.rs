@@ -8,6 +8,7 @@
 pub mod codec;
 pub mod log;
 pub mod node;
+pub mod wire;
 
 pub use node::{Bugs, Config, Envelope, Message, ProposeError, RaftNode, Ready, Role};
 

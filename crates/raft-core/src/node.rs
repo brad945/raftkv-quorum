@@ -11,6 +11,11 @@
 //!    durable state);
 //! 3. then apply `Ready::committed` to the state machine.
 //!
+//! Drain `ready` after **every** input (each `tick`, `step` and `propose`).
+//! One input never asks for a log cut inside the snapshot it installs, but
+//! two batched inputs can (a conflicting append, then an InstallSnapshot):
+//! no single persist order is right for both, and the storage refuses it.
+//!
 //! The node never reads a clock or an OS random source: election timeouts
 //! come from a seeded generator, so a run is reproducible from its seed.
 

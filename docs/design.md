@@ -9,7 +9,7 @@ crates (one Cargo workspace)
   kv          the state machine (get/put/delete + client sessions) and durable storage
   sim         deterministic simulator: N nodes, a fake network, simulated time, fault injection
   checker     linearizability checker for KV histories (hand-written)
-  node        thin real runtime: TCP + files + a timer around raft-core (demo only, R6)
+  server      thin real runtime (R6): the `raftkv` binary, TCP + DiskStorage + a timer around raft-core
 ```
 
 **Pure core (Bradley's call).** A `RaftNode` changes only through three inputs:

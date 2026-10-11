@@ -13,6 +13,8 @@ pub enum Error {
     BadTag(u8),
     /// A string was not valid UTF-8.
     BadUtf8,
+    /// Bytes were left over after a complete value.
+    Trailing,
 }
 
 impl fmt::Display for Error {
@@ -21,6 +23,7 @@ impl fmt::Display for Error {
             Error::Short => write!(f, "input ended early"),
             Error::BadTag(t) => write!(f, "unknown tag {t}"),
             Error::BadUtf8 => write!(f, "invalid UTF-8"),
+            Error::Trailing => write!(f, "trailing bytes"),
         }
     }
 }

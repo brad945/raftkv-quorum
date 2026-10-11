@@ -11,6 +11,24 @@ Every non-trivial design choice gets an entry below. Format:
 **Status:** settled / revisit later
 ```
 
+## [2026-10-11] The TCP runtime: std threads and one event loop, length-prefixed binary frames
+**Made by:** [claude]
+**Decision:** the `raftkv` binary (crate `server`). Here's how it's built:
+- **One thread owns the node** (`RaftNode`, `DiskStorage`, `Kv`) and handles one input at a time from a single channel (ticks, peer messages, client requests). After every input it drains `Ready`: persist, then send, then apply.
+- **Each peer has a writer thread** with a bounded queue. The loop never blocks on it, and frames are dropped while the peer is down.
+- **Frames everywhere** are `[len u32][payload]`, using the same hand-written codec. A bad frame closes the connection and never reaches Raft.
+- **Clients** retry with the same `(client, seq)` and follow redirects. "Outcome unknown" is answered as `Retry`, never as failure.
+- **Fatal storage errors stop the process.**
+**Why:**
+- It's the simulator's driver with real I/O, and nothing else. Owning the state on one thread means no locks.
+- Zero dependencies keeps the "explain every byte" property.
+- Draining after every input matters: two batched inputs can produce one `Ready` that asks to cut the log inside the snapshot it also installs. No persist order is right for that, and `DiskStorage` refuses it.
+**Alternative(s) considered:**
+- **tokio or async:** it adds a dependency and a runtime to explain, and the event loop would be the same.
+- **Text protocol:** it would be readable with `nc`, but there'd be two codecs to keep correct.
+- **gRPC:** out of scope for a demo runtime.
+**Status:** settled
+
 ## [2026-10-11] Replication flow control: etcd's probe/replicate states, plus `rejected` in AppendEntriesResp
 **Made by:** [claude]
 **Decision:** each follower is either *probing* (one append in flight; resend on heartbeat) or *replicating* (`next_index` moves past each append as it's sent). A rejection carries the `prev_index` it rejected, and stale rejections are ignored. `match_index` still moves only on acks, so the commit rule is unchanged.

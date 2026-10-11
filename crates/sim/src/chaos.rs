@@ -152,7 +152,7 @@ pub fn run(cfg: &ChaosConfig, script: &[(u64, Fault)]) -> ChaosResult {
     for id in 1..=cfg.nodes {
         sim.set_bugs(id, cfg.bugs);
     }
-    let mut rng = Rng::new(cfg.seed.wrapping_mul(0x9E37_79B9) ^ 0xC4A0_5);
+    let mut rng = Rng::new(cfg.seed.wrapping_mul(0x9E37_79B9) ^ 0x000C_4A05);
     let mut clients: Vec<Client> = (1..=cfg.clients).map(|id| Client { id, seq: 0, pending: None }).collect();
     let mut history: Vec<HistOp> = Vec::new();
     let mut cursor = 0usize; // into sim.applied_log
@@ -189,7 +189,7 @@ pub fn run(cfg: &ChaosConfig, script: &[(u64, Fault)]) -> ChaosResult {
                 let mut a = Vec::new();
                 let mut b = Vec::new();
                 for id in 1..=cfg.nodes {
-                    if rng.next() % 2 == 0 { a.push(id) } else { b.push(id) }
+                    if rng.next().is_multiple_of(2) { a.push(id) } else { b.push(id) }
                 }
                 sim.partition(vec![a, b]);
                 partitions += 1;
