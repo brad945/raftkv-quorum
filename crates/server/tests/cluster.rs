@@ -1,5 +1,8 @@
 //! Three real `raftkv` processes on localhost (milestone R6). A kill is
-//! SIGKILL: no shutdown code runs, so what survives is what was on disk.
+//! SIGKILL: no shutdown code runs, so what survives is what the process
+//! had written to the OS. The OS page cache survives a process kill, so
+//! this proves the runtime writes before it acks, not that it syncs
+//! (power loss is not simulated here; see design §9).
 
 use kv::{Op, Reply};
 use server::{parse_cluster, status, Client, Member, Status};

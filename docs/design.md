@@ -104,16 +104,17 @@ Commands are `Put(k, v)`, `Get(k)` and `Delete(k)`. Each carries `(client_id, se
 | `vote_is_durable_before_sent` | a node that crashes before persisting its vote can't vote twice in a term | R3 |
 | `figure8_no_commit_of_old_term_by_count` | a leader commits only entries from its own term | R3 |
 | `reordered_append_does_not_truncate` | a delayed or duplicated AppendEntries never deletes entries that match | R3 |
-| `stale_response_ignored` / `match_index_never_decreases` | old replies can't move the leader backwards | R3 |
+| `match_index_never_decreases_and_stale_response_ignored` | old replies can't move the leader backwards | R3 |
 | `higher_term_in_response_steps_down` | the leader steps down on any higher term, including in replies | R3 |
 | `split_vote_resolves` | forced equal timeouts split the vote; randomization resolves it | R3/R5 |
-| `snapshot_offsets` / `old_snapshot_ignored` / `install_sets_commit_and_applied` / `snapshot_survives_crash` | snapshot indexing and durability | R4 |
+| `snapshot_offsets` / `old_snapshot_is_ignored` / `install_snapshot_sets_commit_and_applied_and_restores` / `snapshot_survives_crash` | snapshot indexing and durability | R4 |
 | `wal_torn_tail_truncated` / `wal_corrupt_byte_detected` | crash-safe storage | R2 |
 | `same_seed_same_trace` | the simulator is deterministic | R3 |
 | `kill_mid_write`, `partition_minority_leader`, `split_vote` | the brief's three chaos scenarios | R5 |
 | `random_faults_linearizable` (200 seeds; `long_sweep`: 5000) | random fault schedules never break safety or linearizability | R5 |
 | `checks_catch_planted_bugs` | the checks can fail: planted bugs are caught | R5 |
 | `figure8_correct_raft_stays_safe` / `figure8_planted_bug_breaks_state_machine_safety` | the paper's Figure 8, scripted message by message | R5 |
+| `three_processes_survive_a_leader_kill_and_the_restarted_node_catches_up`, `a_whole_cluster_restart_keeps_every_acknowledged_write` | 3 real processes over TCP: kill -9, restart, catch-up via InstallSnapshot | R6 |
 | `replication_traffic_is_linear_in_writes`, `a_replicating_peer_gets_each_new_entry_once`, `stale_rejections_are_ignored`, `a_probing_peer_has_one_append_in_flight` | the postmortem's bug stays fixed | R5 |
 
 ## 9. What this does NOT handle (for interviews: say it plainly)
@@ -123,7 +124,9 @@ Commands are `Put(k, v)`, `Get(k)` and `Delete(k)`. Each carries `(client_id, se
 - sharding;
 - Byzantine faults;
 - real disk failure beyond torn writes;
-- snapshot chunking (a snapshot travels as one message).
+- snapshot chunking (a snapshot travels as one message). A frame is capped at 64 MB, so that is also the largest snapshot a follower can catch up from;
+- power-loss durability is not tested end to end. A `kill -9` keeps the OS page cache, so the process tests prove the runtime writes before it acks, not that it syncs. That rests on the storage design (fsync / `F_FULLFSYNC`, measured at about 3.6 ms per durable append) and on the storage tests that cut files at every byte;
+- the TCP runtime has no authentication or TLS, and membership is static.
 
 ## 10. Postmortem
 `POSTMORTEM.md` records the real bug: quadratic replication traffic. Every safety and linearizability check passed while it was there; it was found by reading a trace and then measuring. Planted bugs only prove the checker works; they're not the story.
