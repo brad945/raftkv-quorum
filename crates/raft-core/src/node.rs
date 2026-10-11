@@ -56,8 +56,10 @@ pub enum Message {
     AppendEntries { term: Term, prev_index: Index, prev_term: Term, entries: Vec<Entry>, leader_commit: Index },
     /// `success`: `match_index` is the last index this append made agree
     /// with the leader. Failure: `hint` is the index the leader should try
-    /// next (an optimization over decrementing by one; paper §5.3).
-    AppendEntriesResp { term: Term, success: bool, match_index: Index, hint: Index },
+    /// next (an optimization over decrementing by one; paper §5.3), and
+    /// `rejected` is the rejected append's `prev_index`, so the leader can
+    /// tell a rejection of what it sends now from a stale one.
+    AppendEntriesResp { term: Term, success: bool, match_index: Index, hint: Index, rejected: Index },
     InstallSnapshot { term: Term, snapshot: Snapshot },
     InstallSnapshotResp { term: Term, last_index: Index },
 }
@@ -164,6 +166,15 @@ pub struct RaftNode {
     votes: BTreeSet<NodeId>,
     next_index: BTreeMap<NodeId, Index>,
     match_index: BTreeMap<NodeId, Index>,
+    /// Leader only. A peer is *probing* until an append to it succeeds:
+    /// where its log matches ours is unknown, so one append at a time is
+    /// in flight (`paused` until a reply or the next heartbeat). Otherwise
+    /// it is *replicating*: `next_index` moves past each append as it is
+    /// sent, so new entries go out once, not again with every send.
+    /// (etcd's Probe/Replicate states.) `match_index` still moves only on
+    /// acks, so the commit rule is unchanged.
+    probing: BTreeSet<NodeId>,
+    paused: BTreeSet<NodeId>,
     rng: Rng,
     bugs: Bugs,
     // What `ready` will hand out.
@@ -194,6 +205,8 @@ impl RaftNode {
             votes: BTreeSet::new(),
             next_index: BTreeMap::new(),
             match_index: BTreeMap::new(),
+            probing: BTreeSet::new(),
+            paused: BTreeSet::new(),
             rng,
             bugs: Bugs::default(),
             out_hard: false,
@@ -330,12 +343,14 @@ impl RaftNode {
         let next = self.log.last_index() + 1;
         self.next_index = self.peers().into_iter().map(|p| (p, next)).collect();
         self.match_index = self.peers().into_iter().map(|p| (p, 0)).collect();
+        self.probing = self.peers().into_iter().collect();
+        self.paused.clear();
         // A no-op of the new term lets this leader commit everything before
         // it (it may only commit entries of its own term by counting).
         let e = Entry { term: self.hard.term, index: next, kind: EntryKind::Noop };
         self.append_local(vec![e]);
         self.elapsed = 0;
-        self.broadcast_append();
+        self.broadcast_append(false);
         self.maybe_commit();
     }
 
@@ -346,7 +361,7 @@ impl RaftNode {
             Role::Leader => {
                 if self.elapsed >= self.cfg.heartbeat_ticks {
                     self.elapsed = 0;
-                    self.broadcast_append();
+                    self.broadcast_append(true);
                 }
             }
             Role::Follower | Role::Candidate => {
@@ -366,22 +381,32 @@ impl RaftNode {
         let e = Entry { term: self.hard.term, index: self.log.last_index() + 1, kind: EntryKind::Command(data) };
         let at = (e.index, e.term);
         self.append_local(vec![e]);
-        self.broadcast_append();
+        self.broadcast_append(false);
         self.maybe_commit(); // a single-node cluster commits at once
         Ok(at)
     }
 
-    fn broadcast_append(&mut self) {
+    /// `heartbeat`: also reaches a paused peer (a lost reply must not
+    /// stall it forever).
+    fn broadcast_append(&mut self, heartbeat: bool) {
         for p in self.peers() {
-            self.send_append(p);
+            self.send_append(p, heartbeat);
         }
     }
 
-    fn send_append(&mut self, to: NodeId) {
+    fn send_append(&mut self, to: NodeId, heartbeat: bool) {
+        let probing = self.probing.contains(&to);
+        if probing && self.paused.contains(&to) && !heartbeat {
+            return;
+        }
         let next = *self.next_index.get(&to).unwrap_or(&1);
         if next <= self.log.snapshot_index() {
-            // The entries it needs were compacted away: send the snapshot.
+            // The entries it needs were compacted away: send the snapshot,
+            // once, and wait for its reply (heartbeats resend it if lost).
             if let Some(snapshot) = self.log.snapshot_for_send() {
+                self.next_index.insert(to, snapshot.last_index + 1);
+                self.probing.insert(to);
+                self.paused.insert(to);
                 self.send(to, Message::InstallSnapshot { term: self.hard.term, snapshot });
                 return;
             }
@@ -389,6 +414,11 @@ impl RaftNode {
         let prev_index = next - 1;
         let prev_term = self.log.term_at(prev_index).expect("prev entry is in the log or the snapshot");
         let entries = self.log.slice(next, self.cfg.max_batch);
+        if probing {
+            self.paused.insert(to);
+        } else if let Some(last) = entries.last() {
+            self.next_index.insert(to, last.index + 1);
+        }
         self.send(to, Message::AppendEntries { term: self.hard.term, prev_index, prev_term, entries, leader_commit: self.commit });
     }
 
@@ -432,7 +462,7 @@ impl RaftNode {
                 let t = self.hard.term;
                 let reply = match env.msg {
                     Message::RequestVote { .. } => Message::RequestVoteResp { term: t, granted: false },
-                    Message::AppendEntries { .. } => Message::AppendEntriesResp { term: t, success: false, match_index: 0, hint: 0 },
+                    Message::AppendEntries { .. } => Message::AppendEntriesResp { term: t, success: false, match_index: 0, hint: 0, rejected: 0 },
                     Message::InstallSnapshot { .. } => Message::InstallSnapshotResp { term: t, last_index: 0 },
                     _ => unreachable!(),
                 };
@@ -453,12 +483,14 @@ impl RaftNode {
             Message::AppendEntries { prev_index, prev_term, entries, leader_commit, .. } => {
                 self.on_append(from, prev_index, prev_term, entries, leader_commit)
             }
-            Message::AppendEntriesResp { success, match_index, hint, .. } => self.on_append_resp(from, success, match_index, hint),
+            Message::AppendEntriesResp { success, match_index, hint, rejected, .. } => self.on_append_resp(from, success, match_index, hint, rejected),
             Message::InstallSnapshot { snapshot, .. } => self.on_install_snapshot(from, snapshot),
             Message::InstallSnapshotResp { last_index, .. } => {
                 if self.role == Role::Leader {
                     self.advance_peer(from, last_index);
-                    self.send_append(from);
+                    self.probing.remove(&from);
+                    self.paused.remove(&from);
+                    self.send_append(from, false);
                 }
             }
         }
@@ -486,6 +518,7 @@ impl RaftNode {
         self.votes.clear();
         self.reset_election_timer();
 
+        let rejected = prev_index;
         let (mut prev_index, mut prev_term) = (prev_index, prev_term);
         // Entries we already compacted are committed and therefore match:
         // skip them and treat our snapshot point as `prev`.
@@ -497,7 +530,7 @@ impl RaftNode {
         }
         if prev_index > self.log.last_index() {
             let hint = self.log.last_index() + 1;
-            self.send(from, Message::AppendEntriesResp { term, success: false, match_index: 0, hint });
+            self.send(from, Message::AppendEntriesResp { term, success: false, match_index: 0, hint, rejected });
             return;
         }
         if self.log.term_at(prev_index) != Some(prev_term) {
@@ -507,7 +540,7 @@ impl RaftNode {
             while hint > self.log.snapshot_index() + 1 && self.log.term_at(hint - 1) == Some(conflict) {
                 hint -= 1;
             }
-            self.send(from, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: hint.max(1) });
+            self.send(from, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: hint.max(1), rejected });
             return;
         }
         let last_new = prev_index + entries.len() as Index;
@@ -534,7 +567,7 @@ impl RaftNode {
         if leader_commit > self.commit {
             self.commit = leader_commit.min(last_new);
         }
-        self.send(from, Message::AppendEntriesResp { term, success: true, match_index: last_new, hint: 0 });
+        self.send(from, Message::AppendEntriesResp { term, success: true, match_index: last_new, hint: 0, rejected: 0 });
     }
 
     fn advance_peer(&mut self, peer: NodeId, matched: Index) {
@@ -550,21 +583,33 @@ impl RaftNode {
         self.maybe_commit();
     }
 
-    fn on_append_resp(&mut self, from: NodeId, success: bool, matched: Index, hint: Index) {
+    fn on_append_resp(&mut self, from: NodeId, success: bool, matched: Index, hint: Index, rejected: Index) {
         if self.role != Role::Leader {
             return;
         }
         if success {
             self.advance_peer(from, matched);
+            self.probing.remove(&from);
+            self.paused.remove(&from);
             if self.next_index[&from] <= self.log.last_index() {
-                self.send_append(from); // more to send
+                self.send_append(from, false); // more to send
             }
         } else {
             let m = *self.match_index.get(&from).unwrap_or(&0);
+            let next = self.next_index[&from];
+            // A stale rejection (of an append sent before we last backed
+            // up, or of entries since acked) says nothing new. Acting on
+            // each one would resend the same range once per message that
+            // was in flight.
+            let stale = if self.probing.contains(&from) { rejected + 1 != next } else { rejected <= m };
+            if stale {
+                return;
+            }
             // Never back up past what the peer is known to hold.
-            let next = hint.max(m + 1).max(1);
-            self.next_index.insert(from, next);
-            self.send_append(from);
+            self.next_index.insert(from, hint.max(m + 1).max(1));
+            self.probing.insert(from);
+            self.paused.remove(&from);
+            self.send_append(from, false);
         }
     }
 

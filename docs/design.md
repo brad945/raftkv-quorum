@@ -43,6 +43,12 @@ Ready {
 - InstallSnapshot plus log compaction;
 - a no-op entry at the start of each term, so a new leader can commit earlier entries.
 
+**Flow control (beyond the paper; see POSTMORTEM.md):** the leader keeps each follower in one of two states, as etcd does.
+- **Probing:** where the follower's log matches is unknown. At most one append is in flight; the leader resends on the next heartbeat.
+- **Replicating:** after the first successful append. `next_index` moves past each append as it is sent, so every entry goes out once.
+
+A rejection carries the `prev_index` it rejected, so the leader ignores stale ones. `match_index` moves only on acks, so the commit rule is exactly Figure 2's.
+
 **Snapshots are sent whole:** InstallSnapshot carries the entire snapshot in one message (the paper chunks it). That's fine for a small KV store, and listed in §9.
 
 **Out, documented as out:**
@@ -105,8 +111,10 @@ Commands are `Put(k, v)`, `Get(k)` and `Delete(k)`. Each carries `(client_id, se
 | `wal_torn_tail_truncated` / `wal_corrupt_byte_detected` | crash-safe storage | R2 |
 | `same_seed_same_trace` | the simulator is deterministic | R3 |
 | `kill_mid_write`, `partition_minority_leader`, `split_vote` | the brief's three chaos scenarios | R5 |
-| `random_faults_linearizable` (thousands of seeds) | random fault schedules never break linearizability | R5 |
-| `checker_catches_planted_bugs` | the checker itself works | R5 |
+| `random_faults_linearizable` (200 seeds; `long_sweep`: 5000) | random fault schedules never break safety or linearizability | R5 |
+| `checks_catch_planted_bugs` | the checks can fail: planted bugs are caught | R5 |
+| `figure8_correct_raft_stays_safe` / `figure8_planted_bug_breaks_state_machine_safety` | the paper's Figure 8, scripted message by message | R5 |
+| `replication_traffic_is_linear_in_writes`, `a_replicating_peer_gets_each_new_entry_once`, `stale_rejections_are_ignored`, `a_probing_peer_has_one_append_in_flight` | the postmortem's bug stays fixed | R5 |
 
 ## 9. What this does NOT handle (for interviews: say it plainly)
 - membership changes;
@@ -118,4 +126,4 @@ Commands are `Put(k, v)`, `Get(k)` and `Delete(k)`. Each carries `(client_id, se
 - snapshot chunking (a snapshot travels as one message).
 
 ## 10. Postmortem
-`POSTMORTEM.md` records the real bug the chaos tests find: what broke, how it was found (the seed), and why the fix is correct. If random chaos finds no real bug, that's reported honestly. Planted bugs only prove the checker works; they're not the story.
+`POSTMORTEM.md` records the real bug: quadratic replication traffic. Every safety and linearizability check passed while it was there; it was found by reading a trace and then measuring. Planted bugs only prove the checker works; they're not the story.

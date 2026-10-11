@@ -201,7 +201,7 @@ fn figure8(bugs: Bugs) -> (BTreeMap<Term, Vec<NodeId>>, Index) {
     c.win(1, only_entry2);
     assert_eq!(c.node(1).term(), 4);
     // S2 already holds entry 2 (term 2) from (a); its term-4 ack says so.
-    c.queue.push_back(Envelope { from: 2, to: 1, msg: Message::AppendEntriesResp { term: 4, success: true, match_index: 2, hint: 0 } });
+    c.queue.push_back(Envelope { from: 2, to: 1, msg: Message::AppendEntriesResp { term: 4, success: true, match_index: 2, hint: 0, rejected: 0 } });
     c.pump(|m| m.from == 2 && m.to == 1);
     assert_eq!(c.disks[&3].entries.get(1).map(|e| e.term), Some(2), "S3 now holds entry 2 (term 2)");
     let s1_commit = c.node(1).commit_index();

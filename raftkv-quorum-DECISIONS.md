@@ -11,6 +11,16 @@ Every non-trivial design choice gets an entry below. Format:
 **Status:** settled / revisit later
 ```
 
+## [2026-10-11] Replication flow control: etcd's probe/replicate states, plus `rejected` in AppendEntriesResp
+**Made by:** [claude]
+**Decision:** each follower is either *probing* (one append in flight; resend on heartbeat) or *replicating* (`next_index` moves past each append as it's sent). A rejection carries the `prev_index` it rejected, and stale rejections are ignored. `match_index` still moves only on acks, so the commit rule is unchanged.
+**Why:** this fixes the postmortem's bug, where traffic grew as O(n²) in writes (52 appends per write per follower at 300 writes; now 1.6). The `rejected` field matters because without it, a burst of rejections after one dropped message would each resend the whole range.
+**Alternative(s) considered:**
+- **Optimistic `next_index` alone, with no probe state:** under steady writes, "accept a rejection only for `next-1`" never fires, because `next` keeps moving. That's a livelock.
+- **Rate-limit sends per tick:** it hides the symptom, and the duplicates are still there.
+- **Leave it, since it's "only performance":** no. A Raft that floods the network under load isn't one I'd defend.
+**Status:** settled
+
 ## [2026-10-11] Figure 8 is a scripted test, not left to random chaos
 **Made by:** [claude]
 **Decision:** the Figure 8 bug (committing an old-term entry by counting replicas) is tested by a message-by-message script of the paper's sequence (`crates/sim/tests/figure8.rs`). It is not expected from random runs.

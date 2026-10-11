@@ -114,7 +114,7 @@ fn same_seed_same_trace() {
         sim.trace
     };
     let a = run(42);
-    assert!(a.len() > 500, "a meaningful trace ({} events)", a.len());
+    assert!(a.len() > 300, "a meaningful trace ({} events)", a.len());
     assert_eq!(a, run(42), "same seed, same run");
     assert_ne!(a, run(43), "a different seed is a different run");
 }

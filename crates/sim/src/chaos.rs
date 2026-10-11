@@ -88,6 +88,8 @@ pub struct ChaosResult {
     pub crashes: u32,
     pub partitions: u32,
     pub terms: Term,
+    /// InstallSnapshot messages delivered (snapshot coverage).
+    pub snapshots: usize,
 }
 
 impl ChaosResult {
@@ -261,6 +263,7 @@ pub fn run(cfg: &ChaosConfig, script: &[(u64, Fault)]) -> ChaosResult {
         crashes: crashes + sim.mid_step_crashes,
         partitions,
         terms: sim.leaders.keys().max().copied().unwrap_or(0),
+        snapshots: sim.trace.iter().filter(|l| l.contains(" deliver ") && l.contains("InstallSnapshot {")).count(),
         history,
     }
 }

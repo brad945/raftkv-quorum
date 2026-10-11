@@ -34,7 +34,7 @@ fn elect(n: &mut RaftNode) {
 
 fn ack(n: &mut RaftNode, from: NodeId, match_index: Index) {
     let term = n.term();
-    n.step(env(from, n.id(), Message::AppendEntriesResp { term, success: true, match_index, hint: 0 }));
+    n.step(env(from, n.id(), Message::AppendEntriesResp { term, success: true, match_index, hint: 0, rejected: 0 }));
 }
 
 // Paper §5.4.2 / Figure 8: a leader must not commit an entry of an earlier
@@ -111,11 +111,78 @@ fn match_index_never_decreases_and_stale_response_ignored() {
     ack(&mut l, 2, 3); // a delayed, older ack
     assert_eq!(l.match_index(2), 5, "a stale ack can't move match_index back");
     assert!(l.next_index(2) >= 6);
-    // A rejection with a low hint can't push next_index below what the
-    // peer is known to hold.
+    // A (fresh) rejection with a low hint can't push next_index below what
+    // the peer is known to hold.
+    l.propose(b"y".to_vec()).unwrap(); // entry 6, sent with prev 5
     let term = l.term();
-    l.step(env(2, 1, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: 1 }));
+    l.step(env(2, 1, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: 1, rejected: 6 }));
     assert!(l.next_index(2) >= 6, "next_index {}", l.next_index(2));
+}
+
+fn appends_to(r: &Ready, to: NodeId) -> Vec<(Index, Vec<Index>)> {
+    r.messages
+        .iter()
+        .filter(|m| m.to == to)
+        .filter_map(|m| match &m.msg {
+            Message::AppendEntries { prev_index, entries, .. } => Some((*prev_index, entries.iter().map(|e| e.index).collect())),
+            _ => None,
+        })
+        .collect()
+}
+
+// POSTMORTEM.md: before flow control, every send re-sent every unacked
+// entry, so traffic grew with the square of the write rate.
+#[test]
+fn a_replicating_peer_gets_each_new_entry_once() {
+    let mut l = node(1, 0, vec![]);
+    elect(&mut l);
+    let last = l.last_index();
+    ack(&mut l, 2, last); // peer 2 now replicating
+    l.ready();
+    for i in 1..=3 {
+        l.propose(b"x".to_vec()).unwrap();
+        let r = l.ready();
+        assert_eq!(appends_to(&r, 2), vec![(last + i - 1, vec![last + i])], "only the new entry, sent once");
+    }
+    assert_eq!(l.match_index(2), last, "match_index moves only on acks");
+    assert_eq!(l.commit_index(), last, "nothing new commits without acks");
+}
+
+#[test]
+fn a_probing_peer_has_one_append_in_flight() {
+    let mut l = node(1, 0, vec![]);
+    elect(&mut l);
+    l.ready();
+    for _ in 0..3 {
+        l.propose(b"x".to_vec()).unwrap();
+    }
+    assert!(appends_to(&l.ready(), 2).is_empty(), "unconfirmed peer: wait for the first reply");
+    for _ in 0..3 {
+        l.tick();
+    }
+    assert_eq!(appends_to(&l.ready(), 2).len(), 1, "a heartbeat retries once");
+}
+
+#[test]
+fn stale_rejections_are_ignored() {
+    let mut l = node(1, 0, vec![]);
+    elect(&mut l);
+    let m = l.last_index();
+    ack(&mut l, 2, m);
+    for _ in 0..4 {
+        l.propose(b"x".to_vec()).unwrap(); // entries m+1..m+4, one append each
+    }
+    l.ready();
+    // The append carrying m+1 was lost: the next three are all rejected.
+    let term = l.term();
+    let reject = |l: &mut RaftNode, rejected: Index| l.step(env(2, 1, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: m + 1, rejected }));
+    reject(&mut l, m + 1);
+    assert_eq!(appends_to(&l.ready(), 2), vec![(m, vec![m + 1, m + 2, m + 3, m + 4])], "back up once and resend");
+    reject(&mut l, m + 2);
+    reject(&mut l, m + 3);
+    assert!(appends_to(&l.ready(), 2).is_empty(), "the other in-flight rejections are stale");
+    ack(&mut l, 2, m + 4);
+    assert_eq!(l.match_index(2), m + 4);
 }
 
 #[test]
@@ -123,7 +190,7 @@ fn higher_term_in_response_steps_down() {
     let mut l = node(1, 0, vec![]);
     elect(&mut l);
     assert_eq!(l.role(), Role::Leader);
-    l.step(env(3, 1, Message::AppendEntriesResp { term: 9, success: false, match_index: 0, hint: 0 }));
+    l.step(env(3, 1, Message::AppendEntriesResp { term: 9, success: false, match_index: 0, hint: 0, rejected: 0 }));
     assert_eq!(l.role(), Role::Follower);
     assert_eq!(l.term(), 9);
     assert_eq!(l.ready().hard_state, Some(HardState { term: 9, voted_for: None }), "the new term is persisted");
@@ -263,7 +330,7 @@ fn leader_sends_a_snapshot_when_the_follower_is_behind_it() {
     assert_eq!(l.ready().snapshot.map(|s| s.last_index), Some(4), "the snapshot is persisted");
     // Node 3 has nothing: its next index is at or below the snapshot.
     let term = l.term();
-    l.step(env(3, 1, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: 1 }));
+    l.step(env(3, 1, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: 1, rejected: 0 }));
     let r = l.ready();
     assert!(r.messages.iter().any(|m| m.to == 3 && matches!(&m.msg, Message::InstallSnapshot { snapshot, .. } if snapshot.last_index == 4)), "{:?}", r.messages);
     // Its ack moves it past the snapshot.

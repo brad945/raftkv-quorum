@@ -9,7 +9,8 @@ fn summarize(name: &str, rs: &[ChaosResult]) {
     let done: usize = rs.iter().map(|r| r.completed).sum();
     let crashes: u32 = rs.iter().map(|r| r.crashes).sum();
     let parts: u32 = rs.iter().map(|r| r.partitions).sum();
-    println!("{name}: {} runs, {ops} ops ({done} answered), {crashes} crashes, {parts} partitions, failing seeds: {bad:?}", rs.len());
+    let snaps: usize = rs.iter().map(|r| r.snapshots).sum();
+    println!("{name}: {} runs, {ops} ops ({done} answered), {crashes} crashes, {parts} partitions, {snaps} snapshots installed, failing seeds: {bad:?}", rs.len());
 }
 
 #[test]
@@ -123,6 +124,8 @@ fn random_faults_linearizable() {
     }
     let answered: usize = rs.iter().map(|r| r.completed).sum();
     assert!(answered > 200 * 20, "clients made progress ({answered} answered)");
+    let with_snapshots = rs.iter().filter(|r| r.snapshots > 0).count();
+    assert!(with_snapshots > 100, "snapshot transfer is exercised ({with_snapshots} of 200 runs)");
 }
 
 /// The long sweep: `cargo test -p sim --release --test chaos -- --ignored long_sweep`.
