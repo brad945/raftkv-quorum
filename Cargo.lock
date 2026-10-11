@@ -12,3 +12,11 @@ dependencies = [
 [[package]]
 name = "raft-core"
 version = "0.1.0"
+
+[[package]]
+name = "sim"
+version = "0.1.0"
+dependencies = [
+ "kv",
+ "raft-core",
+]

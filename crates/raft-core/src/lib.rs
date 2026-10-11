@@ -6,6 +6,10 @@
 //! and the caller must make the persist part durable before sending.
 
 pub mod codec;
+pub mod log;
+pub mod node;
+
+pub use node::{Bugs, Config, Envelope, Message, ProposeError, RaftNode, Ready, Role};
 
 /// A Raft term.
 pub type Term = u64;

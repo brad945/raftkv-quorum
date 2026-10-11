@@ -1,0 +1,10 @@
+[package]
+name = "sim"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Deterministic simulator: nodes, a faulty network and simulated time, all from one seed"
+
+[dependencies]
+raft-core = { path = "../raft-core" }
+kv = { path = "../kv" }
