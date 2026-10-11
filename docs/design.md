@@ -43,6 +43,8 @@ Ready {
 - InstallSnapshot plus log compaction;
 - a no-op entry at the start of each term, so a new leader can commit earlier entries.
 
+**Snapshots are sent whole:** InstallSnapshot carries the entire snapshot in one message (the paper chunks it). That's fine for a small KV store, and listed in §9.
+
 **Out, documented as out:**
 - cluster membership changes;
 - PreVote;
@@ -112,7 +114,8 @@ Commands are `Put(k, v)`, `Get(k)` and `Delete(k)`. Each carries `(client_id, se
 - leases and ReadIndex, so reads cost a log round trip;
 - sharding;
 - Byzantine faults;
-- real disk failure beyond torn writes.
+- real disk failure beyond torn writes;
+- snapshot chunking (a snapshot travels as one message).
 
 ## 10. Postmortem
 `POSTMORTEM.md` records the real bug the chaos tests find: what broke, how it was found (the seed), and why the fix is correct. If random chaos finds no real bug, that's reported honestly. Planted bugs only prove the checker works; they're not the story.

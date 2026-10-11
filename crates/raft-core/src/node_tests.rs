@@ -203,3 +203,80 @@ fn follower_commits_only_what_the_append_verified() {
     assert_eq!(f.commit_index(), 1, "only index 1 was verified by this append");
     assert_eq!(f.ready().committed.len(), 1);
 }
+
+fn snap(last_index: Index, last_term: Term) -> crate::Snapshot {
+    crate::Snapshot { last_index, last_term, data: format!("state@{last_index}").into_bytes() }
+}
+
+// design §8 install_sets_commit_and_applied
+#[test]
+fn install_snapshot_sets_commit_and_applied_and_restores() {
+    let mut f = node(2, 1, vec![e(1, 1)]);
+    f.step(env(1, 2, Message::InstallSnapshot { term: 2, snapshot: snap(10, 2) }));
+    assert_eq!(f.commit_index(), 10);
+    assert_eq!(f.last_index(), 10);
+    assert_eq!(f.log().snapshot_index(), 10);
+    let r = f.ready();
+    assert_eq!(r.restore.as_ref().map(|s| s.last_index), Some(10), "the state machine is restored from it");
+    assert_eq!(r.snapshot.as_ref().map(|s| s.last_index), Some(10), "and it is persisted");
+    assert!(r.committed.is_empty(), "nothing at or below the snapshot is re-applied");
+    assert!(matches!(r.messages[0].msg, Message::InstallSnapshotResp { last_index: 10, .. }));
+    // Replication continues right after it.
+    f.step(env(1, 2, Message::AppendEntries { term: 2, prev_index: 10, prev_term: 2, entries: vec![e(2, 11)], leader_commit: 11 }));
+    assert_eq!(f.ready().committed.iter().map(|e| e.index).collect::<Vec<_>>(), vec![11]);
+}
+
+// design §8 old_snapshot_ignored
+#[test]
+fn old_snapshot_is_ignored() {
+    let mut f = node(2, 2, vec![]);
+    f.step(env(1, 2, Message::AppendEntries { term: 2, prev_index: 0, prev_term: 0, entries: (1..=8).map(|i| e(2, i)).collect(), leader_commit: 8 }));
+    f.ready();
+    f.step(env(1, 2, Message::InstallSnapshot { term: 2, snapshot: snap(5, 2) }));
+    assert_eq!(f.log().snapshot_index(), 0, "an older snapshot changes nothing");
+    assert_eq!(f.last_index(), 8);
+    let r = f.ready();
+    assert!(r.restore.is_none() && r.snapshot.is_none());
+}
+
+#[test]
+fn snapshot_keeps_a_matching_tail_beyond_it() {
+    // The follower already has entries past the snapshot that match it.
+    let mut f = node(2, 2, (1..=8).map(|i| e(2, i)).collect());
+    f.step(env(1, 2, Message::InstallSnapshot { term: 2, snapshot: snap(5, 2) }));
+    assert_eq!(f.log().snapshot_index(), 5);
+    assert_eq!(f.last_index(), 8, "entries 6..8 follow the snapshot and are kept");
+}
+
+#[test]
+fn leader_sends_a_snapshot_when_the_follower_is_behind_it() {
+    let mut l = node(1, 0, vec![]);
+    elect(&mut l);
+    for _ in 0..5 {
+        l.propose(b"x".to_vec()).unwrap();
+    }
+    let last = l.last_index();
+    ack(&mut l, 2, last);
+    l.ready(); // apply everything
+    l.compact(4, b"state@4".to_vec());
+    assert_eq!(l.log().snapshot_index(), 4);
+    assert_eq!(l.ready().snapshot.map(|s| s.last_index), Some(4), "the snapshot is persisted");
+    // Node 3 has nothing: its next index is at or below the snapshot.
+    let term = l.term();
+    l.step(env(3, 1, Message::AppendEntriesResp { term, success: false, match_index: 0, hint: 1 }));
+    let r = l.ready();
+    assert!(r.messages.iter().any(|m| m.to == 3 && matches!(&m.msg, Message::InstallSnapshot { snapshot, .. } if snapshot.last_index == 4)), "{:?}", r.messages);
+    // Its ack moves it past the snapshot.
+    l.step(env(3, 1, Message::InstallSnapshotResp { term, last_index: 4 }));
+    assert_eq!(l.match_index(3), 4);
+    assert!(l.ready().messages.iter().any(|m| m.to == 3 && matches!(&m.msg, Message::AppendEntries { prev_index: 4, .. })));
+}
+
+#[test]
+fn compact_never_runs_past_applied() {
+    let mut l = node(1, 0, vec![]);
+    elect(&mut l);
+    l.propose(b"x".to_vec()).unwrap();
+    l.compact(2, vec![]); // index 2 is not applied (not even committed)
+    assert_eq!(l.log().snapshot_index(), 0);
+}

@@ -242,3 +242,79 @@ fn stale_message_is_dropped_by_term() {
     assert_eq!(sim.core(f).unwrap().term(), term);
     assert_safe(&sim);
 }
+
+// R4: a follower that was down while the leader compacted past its log
+// catches up through InstallSnapshot, with the same state as everyone.
+#[test]
+fn lagging_follower_catches_up_through_a_snapshot() {
+    let mut cfg = SimConfig::new(3, 11);
+    cfg.compact_every = 5;
+    let mut sim = Sim::new(cfg);
+    let l = elect(&mut sim);
+    let lagger = (1..=3).find(|&i| i != l).unwrap();
+    sim.crash(lagger);
+    for i in 1..=30 {
+        sim.propose(put(1, i, &format!("k{}", i % 4), &i.to_string()));
+        sim.run(2);
+    }
+    let leader = sim.leader().unwrap();
+    assert!(sim.core(leader).unwrap().log().snapshot_index() >= 20, "the leader compacted");
+    sim.restart(lagger);
+    let last = sim.core(leader).unwrap().last_index();
+    assert!(sim.run_until(500, |s| s.nodes[&lagger].applied >= last), "the lagger caught up");
+    assert!(sim.nodes[&lagger].disk.snapshot.is_some(), "it got there through a snapshot");
+    assert_eq!(sim.nodes[&lagger].kv, sim.nodes[&leader].kv);
+    assert_safe(&sim);
+}
+
+// design §8 snapshot_survives_crash: a node restarts from its own snapshot
+// plus the log after it.
+#[test]
+fn snapshot_survives_crash() {
+    let mut cfg = SimConfig::new(3, 12);
+    cfg.compact_every = 4;
+    let mut sim = Sim::new(cfg);
+    elect(&mut sim);
+    for i in 1..=20 {
+        sim.propose(put(2, i, "k", &i.to_string()));
+        sim.run(2);
+    }
+    sim.run(30);
+    for id in 1..=3 {
+        assert!(sim.nodes[&id].disk.snapshot.is_some(), "node {id} compacted");
+        let before = sim.nodes[&id].kv.clone();
+        sim.crash(id);
+        sim.restart(id);
+        assert!(sim.run_until(300, |s| s.nodes[&id].kv == before && s.leader().is_some()), "node {id} restored its state");
+    }
+    assert_safe(&sim);
+}
+
+#[test]
+fn compaction_under_faults_stays_safe() {
+    let mut cfg = SimConfig::new(5, 13);
+    cfg.compact_every = 3;
+    cfg.delay = (1, 6);
+    cfg.drop = 80_000;
+    cfg.duplicate = 30_000;
+    let mut sim = Sim::new(cfg);
+    let mut seq = 0;
+    for round in 0..60 {
+        if round % 15 == 7 {
+            let victim = (round as u64 % 5) + 1;
+            sim.crash(victim);
+            sim.run(20);
+            sim.restart(victim);
+        }
+        if sim.leader().is_some() {
+            seq += 1;
+            sim.propose(put(3, seq, &format!("k{}", seq % 3), &seq.to_string()));
+        }
+        sim.run(4);
+    }
+    sim.heal();
+    sim.run(400);
+    let kvs: BTreeSet<Vec<u8>> = sim.nodes.values().filter(|n| n.applied == sim.nodes.values().map(|m| m.applied).max().unwrap()).map(|n| n.kv.snapshot()).collect();
+    assert_eq!(kvs.len(), 1, "every fully caught-up node has the same state");
+    assert_safe(&sim);
+}
