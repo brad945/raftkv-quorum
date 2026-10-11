@@ -8,3 +8,4 @@ description = "Deterministic simulator: nodes, a faulty network and simulated ti
 [dependencies]
 raft-core = { path = "../raft-core" }
 kv = { path = "../kv" }
+checker = { path = "../checker" }

@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "checker"
+version = "0.1.0"
+
+[[package]]
 name = "kv"
 version = "0.1.0"
 dependencies = [
@@ -17,6 +21,7 @@ version = "0.1.0"
 name = "sim"
 version = "0.1.0"
 dependencies = [
+ "checker",
  "kv",
  "raft-core",
 ]

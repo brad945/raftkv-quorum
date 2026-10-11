@@ -11,6 +11,23 @@ Every non-trivial design choice gets an entry below. Format:
 **Status:** settled / revisit later
 ```
 
+## [2026-10-11] Figure 8 is a scripted test, not left to random chaos
+**Made by:** [claude]
+**Decision:** the Figure 8 bug (committing an old-term entry by counting replicas) is tested by a message-by-message script of the paper's sequence (`crates/sim/tests/figure8.rs`). It is not expected from random runs.
+**Why:** 500 random seeds with the bug planted caught it 0 times, even with one-entry batches. A new leader's no-op travels with the old entries, so a majority almost never holds an old-term entry without a current-term one. The script proves both directions: correct Raft keeps commit < 2 and every node applies the same entry at index 2; the planted bug commits it and two nodes apply different entries there.
+**Alternative(s) considered:**
+- **Tune the random fault rates until it shows up:** that's slow, fragile, and a passing sweep would still prove nothing.
+- **Unit test only:** `node_tests` already has one, but it doesn't show the end-to-end safety violation.
+**Status:** settled
+
+## [2026-10-11] The simulator can crash a node between computing and persisting
+**Made by:** [claude]
+**Decision:** `crash_mid_step` crashes a node at random points inside one driver step: after the core computed its `Ready` but before the disk write, or after the write but before sending. Named test `kill_mid_write`, and on in every chaos run at 500 ppm.
+**Why:** crashes landed only between whole steps at first. In 200 seeds, the planted "send before persist" bug was byte-identical to correct Raft: the window it opens was never hit. With mid-step crashes it fails 1–16 of 300 seeds (more at higher rates), and correct Raft still fails 0.
+**Alternative(s) considered:**
+- **Crash only between steps:** that was the original model; it was too coarse to test durability ordering.
+**Status:** settled
+
 Newest entries at the top. This file is interview prep as much as it is documentation — write entries assuming you'll need to defend them cold, months from now, with no other context.
 
 Reserve a dedicated section (or a separate `POSTMORTEM.md`) for the chaos-testing bug writeup once you hit it — that entry matters more than any other single piece of documentation in this repo.

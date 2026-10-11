@@ -16,6 +16,8 @@
 
 
 
+pub mod chaos;
+
 use kv::Kv;
 use raft_core::{Bugs, Config, Entry, EntryKind, Envelope, HardState, Index, NodeId, RaftNode, Role, Snapshot, Term};
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,11 +68,19 @@ pub struct SimConfig {
     /// Test only: the driver sends messages *before* persisting, which is
     /// the bug the `Ready` ordering exists to prevent.
     pub send_before_persist: bool,
+    /// Probability (per million, per driver step) that the node crashes
+    /// *between* the driver's two phases: after persisting and before
+    /// sending (or, with `send_before_persist`, after sending and before
+    /// persisting). Real machines can die there; a crash only between
+    /// whole steps would hide exactly the ordering bug the contract is for.
+    pub crash_mid_step: u32,
+    /// At most this many entries per AppendEntries (the nodes' config).
+    pub max_batch: usize,
 }
 
 impl SimConfig {
     pub fn new(nodes: u64, seed: u64) -> Self {
-        SimConfig { nodes, seed, delay: (1, 3), drop: 0, duplicate: 0, compact_every: 0, send_before_persist: false }
+        SimConfig { nodes, seed, delay: (1, 3), drop: 0, duplicate: 0, compact_every: 0, send_before_persist: false, crash_mid_step: 0, max_batch: 64 }
     }
 }
 
@@ -160,6 +170,8 @@ pub struct Sim {
     pub violations: Vec<String>,
     /// Commands applied, in order, for client bookkeeping.
     pub applied_log: Vec<Applied>,
+    /// Crashes injected between a driver step's two phases.
+    pub mid_step_crashes: u32,
 }
 
 impl Sim {
@@ -167,7 +179,9 @@ impl Sim {
         let members: Vec<NodeId> = (1..=cfg.nodes).collect();
         let mut nodes = BTreeMap::new();
         for &id in &members {
-            let core = RaftNode::new(Config::new(id, members.clone(), cfg.seed), HardState::default(), None, Vec::new());
+            let mut c = Config::new(id, members.clone(), cfg.seed);
+            c.max_batch = cfg.max_batch;
+            let core = RaftNode::new(c, HardState::default(), None, Vec::new());
             nodes.insert(id, SimNode { id, core: Some(core), disk: Disk::default(), kv: Kv::default(), applied: 0, bugs: Bugs::default(), restarts: 0 });
         }
         Sim {
@@ -183,6 +197,7 @@ impl Sim {
             committed: BTreeMap::new(),
             violations: Vec::new(),
             applied_log: Vec::new(),
+            mid_step_crashes: 0,
         }
     }
 
@@ -191,7 +206,9 @@ impl Sim {
     }
 
     fn config(&self, id: NodeId) -> Config {
-        Config::new(id, self.members(), self.cfg.seed)
+        let mut c = Config::new(id, self.members(), self.cfg.seed);
+        c.max_batch = self.cfg.max_batch;
+        c
     }
 
     /// Test only: turn on known bugs in one node (kept across restarts).
@@ -296,9 +313,19 @@ impl Sim {
                 for m in ready.messages.clone() {
                     self.enqueue(m);
                 }
+            } else {
+                self.nodes.get_mut(&id).unwrap().disk.persist(&ready);
             }
-            self.nodes.get_mut(&id).unwrap().disk.persist(&ready);
-            if !self.cfg.send_before_persist {
+            // A crash between the two phases loses the second one.
+            if self.cfg.crash_mid_step > 0 && self.rng.chance(self.cfg.crash_mid_step) {
+                self.trace.push(format!("t{} crash {id} mid-step", self.now));
+                self.crash(id);
+                self.mid_step_crashes += 1;
+                return;
+            }
+            if self.cfg.send_before_persist {
+                self.nodes.get_mut(&id).unwrap().disk.persist(&ready);
+            } else {
                 for m in ready.messages.clone() {
                     self.enqueue(m);
                 }

@@ -1,0 +1,8 @@
+[package]
+name = "checker"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "A linearizability checker for key-value histories (Wing & Gong search, per key)"
+
+[dependencies]
