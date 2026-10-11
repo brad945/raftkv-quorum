@@ -1,0 +1,8 @@
+[package]
+name = "raft-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "A pure Raft state machine: no I/O, no clock, no threads"
+
+[dependencies]

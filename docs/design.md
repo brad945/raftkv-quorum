@@ -63,7 +63,10 @@ Commands are `Put(k, v)`, `Get(k)` and `Delete(k)`. Each carries `(client_id, se
   - On recovery: read records until the first one that is short or has a bad CRC, then truncate the file there (a torn tail from a crash).
   - A truncation from a Raft conflict is a separate record kind.
 - **Snapshot:** written to a temp file, fsynced, then renamed.
-- **macOS caveat, to verify before claiming it in docs:** `File::sync_all` (`fsync`) on macOS doesn't force the disk's own cache to flush. Real durability needs `fcntl(F_FULLFSYNC)`. Measure and document; don't assume.
+- **macOS durability (measured 2026-10-11, this Mac, APFS SSD):** plain `fsync` on macOS doesn't flush the disk's own cache; `fcntl(F_FULLFSYNC)` does. `SyncMode::Full` calls F_FULLFSYNC explicitly.
+  - **Measured cost per durable append:** none 0.03 ms, fsync 3.6 ms, full 3.5 ms (`cargo test -p kv measure_sync_cost -- --ignored --nocapture`).
+  - **Why fsync and full cost the same:** most likely Rust's `sync_all` already issues F_FULLFSYNC on Apple platforms, so both reach the disk.
+  - **What it means:** a durable write costs about 120× a non-durable one. That's why the node driver should batch a whole `Ready` into one sync, not sync per entry.
 
 ## 6. The simulator (`sim` crate): determinism is the point
 - **Simulated time:** a discrete event queue ordered by `(time, sequence number)`.

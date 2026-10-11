@@ -1,0 +1,9 @@
+[package]
+name = "kv"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The key-value state machine (with client sessions) and crash-safe durable storage"
+
+[dependencies]
+raft-core = { path = "../raft-core" }
